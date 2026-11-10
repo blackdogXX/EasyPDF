@@ -47,4 +47,6 @@
     <string name="pin">Закрепить вверху</string>
     <string name="unpin">Открепить</string>
     <string name="pinned_name">★ %1$s</string>
+    <string name="back">Назад</string>
+    <string name="back_to_place">Вернуться</string>
 </resources>

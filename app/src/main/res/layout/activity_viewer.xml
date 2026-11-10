@@ -96,6 +96,19 @@
         </LinearLayout>
     </FrameLayout>
 
+    <!-- Появляется после перехода внутри документа: вернуться туда, откуда прыгнули -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/back_chip"
+        style="@style/Widget.Material3.Button.TonalButton.Icon"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|start"
+        android:layout_marginStart="16dp"
+        android:layout_marginBottom="16dp"
+        android:text="@string/back_to_place"
+        android:visibility="gone"
+        app:icon="@drawable/ic_back" />
+
     <View
         android:id="@+id/status_spacer"
         android:layout_width="match_parent"

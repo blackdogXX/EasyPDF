@@ -63,6 +63,7 @@ class ViewerActivity : AppCompatActivity() {
     private lateinit var toolbar: MaterialToolbar
     private lateinit var web: WebView
     private lateinit var bar: View
+    private lateinit var backChip: View
     private lateinit var searchBar: View
     private lateinit var searchInput: EditText
     private lateinit var searchCount: TextView
@@ -75,6 +76,10 @@ class ViewerActivity : AppCompatActivity() {
     private var loaded = false
     private var searchOpen = false
     private var rotation = 0
+    private var historyCount = 0
+    private var barShown = true
+    private var chipUntil = 0L   // до какого момента кнопку «Вернуться» держим на экране
+    private val hideChip = Runnable { if (!barShown) backChip.visibility = View.GONE }
     private var zoom = 1.0
 
     // Большой файл отдаём просмотрщику частями (см. Client); для обычных эти поля пусты.
@@ -117,6 +122,8 @@ class ViewerActivity : AppCompatActivity() {
         toolbar = findViewById(R.id.toolbar)
         web = findViewById(R.id.web)
         bar = findViewById(R.id.bar)
+        backChip = findViewById(R.id.back_chip)
+        backChip.setOnClickListener { js("EasyPDF.back()") }
         searchBar = findViewById(R.id.search_bar)
         searchInput = findViewById(R.id.search_input)
         searchCount = findViewById(R.id.search_count)
@@ -134,7 +141,12 @@ class ViewerActivity : AppCompatActivity() {
             content.updatePadding(top = bars.top)
             bar.updateLayoutParams<ViewGroup.MarginLayoutParams> { topMargin = bars.top }
             bar.updatePadding(left = bars.left, right = bars.right)
-            bottomSpacer.updateLayoutParams { height = maxOf(bars.bottom, ime.bottom) }
+            val bottom = maxOf(bars.bottom, ime.bottom)
+            bottomSpacer.updateLayoutParams { height = bottom }
+            backChip.updateLayoutParams<ViewGroup.MarginLayoutParams> {
+                bottomMargin = bottom + (16 * resources.displayMetrics.density).toInt()
+                marginStart = bars.left + (16 * resources.displayMetrics.density).toInt()
+            }
             insets
         }
         applyKeepScreenOn()
@@ -142,6 +154,10 @@ class ViewerActivity : AppCompatActivity() {
         displayName = queryName(uri)
         title = displayName
         toolbar.setOnClickListener { showGoToPage() }
+        // Стрелка в панели делает то же, что системная кнопка «Назад».
+        toolbar.setNavigationIcon(R.drawable.ic_back)
+        toolbar.setNavigationContentDescription(R.string.back)
+        toolbar.setNavigationOnClickListener { onBackPressedDispatcher.onBackPressed() }
         onBackPressedDispatcher.addCallback(this, historyBack)
         onBackPressedDispatcher.addCallback(this, searchBack)   // добавлен позже — срабатывает первым
         setupSearch()
@@ -350,7 +366,19 @@ class ViewerActivity : AppCompatActivity() {
         fun onBar(show: Boolean) = runOnUiThread { showBar(show) }
 
         @JavascriptInterface
-        fun onHistory(count: Int) = runOnUiThread { historyBack.isEnabled = count > 0 }
+        fun onHistory(count: Int) = runOnUiThread {
+            historyCount = count
+            historyBack.isEnabled = count > 0
+            handler.removeCallbacks(hideChip)
+            if (count > 0) {
+                // После перехода кнопка «Вернуться» видна несколько секунд, даже если панель спряталась.
+                backChip.visibility = View.VISIBLE
+                chipUntil = System.currentTimeMillis() + CHIP_MS
+                handler.postDelayed(hideChip, CHIP_MS)
+            } else {
+                backChip.visibility = View.GONE
+            }
+        }
 
         @JavascriptInterface
         fun onView(rotation: Int, zoom: Double) = runOnUiThread {
@@ -451,6 +479,13 @@ class ViewerActivity : AppCompatActivity() {
     /** Панель уезжает вверх, за полоску строки состояния, и возвращается обратно. */
     private fun showBar(show: Boolean) {
         if (searchOpen && !show) return
+        barShown = show
+        // Кнопка «Вернуться» показывается вместе с панелью, пока есть куда возвращаться.
+        if (show && historyCount > 0) {
+            backChip.visibility = View.VISIBLE
+        } else if (!show && System.currentTimeMillis() > chipUntil) {
+            backChip.visibility = View.GONE
+        }
         bar.animate()
             .translationY(if (show) 0f else -bar.height.toFloat())
             .setDuration(180)
@@ -779,6 +814,7 @@ class ViewerActivity : AppCompatActivity() {
         const val STATE_PAGE = "page"
         const val FIND_NOT_FOUND = 1
         const val FIND_PENDING = 3
+        const val CHIP_MS = 8000L
         const val BAR_DP = 64   // высота панели в activity_viewer.xml
         const val PREF_NIGHT = "night"
         const val PREF_KEEP_ON = "keep_on"
