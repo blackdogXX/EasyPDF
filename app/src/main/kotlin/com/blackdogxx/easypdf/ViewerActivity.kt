@@ -31,6 +31,7 @@ class ViewerActivity : AppCompatActivity(), EasyPdfFragment.Host {
     private var pdfView: PdfView? = null
     private var pageCount = 0
     private var currentPage = 0
+    private var visiblePages = 1
     private var startPage = 0
     private var loaded = false
 
@@ -94,6 +95,8 @@ class ViewerActivity : AppCompatActivity(), EasyPdfFragment.Host {
 
     override fun onPdfViewReady(pdfView: PdfView) {
         this.pdfView = pdfView
+        // Короткий документ прижимаем к верху, а не центрируем по высоте экрана.
+        pdfView.verticalAlignment = PdfView.VERTICAL_ALIGNMENT_TOP
         pdfView.addOnViewportChangedListener(object : PdfView.OnViewportChangedListener {
             override fun onViewportChanged(
                 firstVisiblePage: Int,
@@ -101,8 +104,10 @@ class ViewerActivity : AppCompatActivity(), EasyPdfFragment.Host {
                 pageLocations: SparseArray<RectF>,
                 zoomLevel: Float,
             ) {
-                if (firstVisiblePage != currentPage) {
+                val count = visiblePagesCount.coerceAtLeast(1)
+                if (firstVisiblePage != currentPage || count != visiblePages) {
                     currentPage = firstVisiblePage
+                    visiblePages = count
                     updatePageLabel()
                 }
             }
@@ -166,8 +171,13 @@ class ViewerActivity : AppCompatActivity(), EasyPdfFragment.Host {
 
     private fun updatePageLabel() {
         val total = totalPages()
-        supportActionBar?.subtitle =
-            if (total > 0) getString(R.string.page_of, currentPage + 1, total) else null
+        val first = currentPage + 1
+        val last = (currentPage + visiblePages).coerceAtMost(total)
+        supportActionBar?.subtitle = when {
+            total <= 0 -> null
+            last > first -> getString(R.string.pages_of, first, last, total)
+            else -> getString(R.string.page_of, first, total)
+        }
     }
 
     private fun showGoToPage() {

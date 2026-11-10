@@ -34,7 +34,8 @@ class EasyPdfFragment : PdfViewerFragment() {
     }
 
     override fun onRequestImmersiveMode(enterImmersive: Boolean) {
-        super.onRequestImmersiveMode(enterImmersive)
+        // super не вызываем: он показывает кнопку-карандаш (правка в стороннем приложении),
+        // а нам нужен только просмотр.
         host?.onImmersiveMode(enterImmersive)
     }
 }
