@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">EasyPDF</string>
+    <string name="open_file">Открыть файл</string>
+    <string name="no_recents">Недавних файлов пока нет.\nНажмите «Открыть файл» или откройте PDF из другого приложения.</string>
+    <string name="search">Поиск</string>
+    <string name="go_to_page">Перейти к странице</string>
+    <string name="share">Поделиться</string>
+    <string name="page_of">%1$d / %2$d</string>
+    <string name="page_hint">Номер страницы (1–%1$d)</string>
+    <string name="go">Перейти</string>
+    <string name="cancel">Отмена</string>
+    <string name="close">Закрыть</string>
+    <string name="open_error">Не удалось открыть файл</string>
+    <string name="share_error">Не удалось поделиться файлом</string>
+    <string name="remove_from_list">Убрать из списка</string>
+    <string name="recent_info">стр. %1$d из %2$d · %3$s</string>
+    <string name="not_loaded">Документ ещё загружается</string>
+</resources>
