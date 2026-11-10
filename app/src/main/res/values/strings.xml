@@ -35,4 +35,16 @@
     <string name="saved">Копия сохранена</string>
     <string name="save_error">Не удалось сохранить копию</string>
     <string name="print_error">Печать недоступна</string>
+    <string name="bookmarks">Закладки</string>
+    <string name="no_bookmarks">Закладок пока нет</string>
+    <string name="bookmark_add">Добавить стр. %1$d</string>
+    <string name="bookmark_remove">Убрать стр. %1$d</string>
+    <string name="bookmark_name_hint">Название (необязательно)</string>
+    <string name="bookmark_new">Закладка на стр. %1$d</string>
+    <string name="bookmark_item">стр. %1$d — %2$s</string>
+    <string name="bookmark_item_plain">стр. %1$d</string>
+    <string name="add">Добавить</string>
+    <string name="pin">Закрепить вверху</string>
+    <string name="unpin">Открепить</string>
+    <string name="pinned_name">★ %1$s</string>
 </resources>

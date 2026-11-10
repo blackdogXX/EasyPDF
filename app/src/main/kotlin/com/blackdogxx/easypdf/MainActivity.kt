@@ -57,15 +57,21 @@ class MainActivity : AppCompatActivity() {
         }
         list.setOnItemLongClickListener { _, _, position, _ ->
             val item = adapter.getItem(position) ?: return@setOnItemLongClickListener true
+            val pinLabel = getString(if (item.pinned) R.string.unpin else R.string.pin)
             MaterialAlertDialogBuilder(this)
                 .setTitle(item.name)
-                .setItems(arrayOf(getString(R.string.remove_from_list))) { _, _ ->
-                    Recents.remove(this, item.uri)
-                    try {
-                        contentResolver.releasePersistableUriPermission(
-                            Uri.parse(item.uri), Intent.FLAG_GRANT_READ_URI_PERMISSION
-                        )
-                    } catch (_: Exception) {
+                .setItems(arrayOf(pinLabel, getString(R.string.remove_from_list))) { _, which ->
+                    if (which == 0) {
+                        Recents.setPinned(this, item.uri, !item.pinned)
+                    } else {
+                        Recents.remove(this, item.uri)
+                        Bookmarks.removeAll(this, item.uri)
+                        try {
+                            contentResolver.releasePersistableUriPermission(
+                                Uri.parse(item.uri), Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            )
+                        } catch (_: Exception) {
+                        }
                     }
                     refresh()
                 }
@@ -99,7 +105,8 @@ class MainActivity : AppCompatActivity() {
         override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
             val view = convertView ?: layoutInflater.inflate(R.layout.item_recent, parent, false)
             val item = getItem(position) ?: return view
-            view.findViewById<TextView>(R.id.name).text = item.name
+            view.findViewById<TextView>(R.id.name).text =
+                if (item.pinned) getString(R.string.pinned_name, item.name) else item.name
             val date = DateFormat.getMediumDateFormat(context).format(Date(item.time))
             view.findViewById<TextView>(R.id.info).text =
                 if (item.pages > 0) getString(R.string.recent_info, item.page + 1, item.pages, date) else date

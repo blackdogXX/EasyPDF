@@ -9,6 +9,8 @@
         android:title="@string/go_to_page" app:showAsAction="never" />
     <item android:id="@+id/action_outline"
         android:title="@string/outline" app:showAsAction="never" />
+    <item android:id="@+id/action_bookmarks"
+        android:title="@string/bookmarks" app:showAsAction="never" />
     <item android:id="@+id/action_rotate"
         android:title="@string/rotate" app:showAsAction="never" />
     <item android:id="@+id/action_night" android:checkable="true"

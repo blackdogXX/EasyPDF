@@ -48,7 +48,10 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
+import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
 
 /**
  * Экран просмотра. Документ рисует pdf.js внутри WebView (страница из assets/viewer),
@@ -71,6 +74,13 @@ class ViewerActivity : AppCompatActivity() {
     private var lastPage = 1
     private var loaded = false
     private var searchOpen = false
+    private var rotation = 0
+    private var zoom = 1.0
+
+    // Большой файл отдаём просмотрщику частями (см. Client); для обычных эти поля пусты.
+    private var docFd: ParcelFileDescriptor? = null
+    private var docChannel: FileChannel? = null
+    private var docSize = 0L
     private var outline: List<Pair<String, Int>> = emptyList()   // заголовок и уровень вложенности
 
     private val settings by lazy { getSharedPreferences("settings", MODE_PRIVATE) }
@@ -84,6 +94,11 @@ class ViewerActivity : AppCompatActivity() {
 
     private val searchBack = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() = closeSearch()
+    }
+
+    /** Включается, когда есть куда возвращаться после перехода внутри документа. */
+    private val historyBack = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() = js("EasyPDF.back()")
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -127,7 +142,8 @@ class ViewerActivity : AppCompatActivity() {
         displayName = queryName(uri)
         title = displayName
         toolbar.setOnClickListener { showGoToPage() }
-        onBackPressedDispatcher.addCallback(this, searchBack)
+        onBackPressedDispatcher.addCallback(this, historyBack)
+        onBackPressedDispatcher.addCallback(this, searchBack)   // добавлен позже — срабатывает первым
         setupSearch()
 
         var startPage = savedInstanceState?.getInt(STATE_PAGE, 0) ?: 0
@@ -138,7 +154,11 @@ class ViewerActivity : AppCompatActivity() {
             } catch (_: Exception) {
             }
         }
-        if (startPage <= 0) startPage = (Recents.find(this, uri.toString())?.page ?: 0) + 1
+        val recent = Recents.find(this, uri.toString())
+        if (startPage <= 0) startPage = (recent?.page ?: 0) + 1
+        rotation = recent?.rotation ?: 0
+        zoom = recent?.zoom ?: 1.0
+        val range = if (openForRanges()) 1 else 0
 
         web.setBackgroundColor(Color.TRANSPARENT)
         web.settings.apply {
@@ -152,7 +172,10 @@ class ViewerActivity : AppCompatActivity() {
         web.webViewClient = Client()
         web.addJavascriptInterface(Bridge(), "Android")
         val night = if (settings.getBoolean(PREF_NIGHT, false)) 1 else 0
-        web.loadUrl("$ORIGIN/viewer/viewer.html?page=$startPage&top=$BAR_DP&night=$night")
+        web.loadUrl(
+            "$ORIGIN/viewer/viewer.html?page=$startPage&top=$BAR_DP&night=$night" +
+                "&rot=$rotation&zoom=$zoom&range=$range"
+        )
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -162,7 +185,7 @@ class ViewerActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
-        if (loaded) Recents.setPage(this, uri.toString(), firstPage - 1)
+        if (loaded) Recents.setView(this, uri.toString(), firstPage - 1, rotation, zoom)
     }
 
     override fun onDestroy() {
@@ -171,7 +194,74 @@ class ViewerActivity : AppCompatActivity() {
             web.stopLoading()
             web.destroy()
         }
+        try {
+            docChannel?.close()
+            docFd?.close()
+        } catch (_: Exception) {
+        }
         super.onDestroy()
+    }
+
+    /**
+     * Если файл большой и лежит в хранилище с произвольным доступом, открываем его один раз
+     * и дальше отдаём pdf.js кусками по запросу — документ не грузится в память целиком.
+     */
+    private fun openForRanges(): Boolean {
+        try {
+            val fd = contentResolver.openFileDescriptor(uri, "r") ?: return false
+            val size = fd.statSize
+            if (size < RANGE_THRESHOLD) {
+                fd.close()
+                return false
+            }
+            val channel = FileInputStream(fd.fileDescriptor).channel
+            channel.read(ByteBuffer.allocate(1), 0)   // проверка, что чтение с позиции возможно
+            docFd = fd
+            docChannel = channel
+            docSize = size
+            return true
+        } catch (_: Exception) {
+            return false
+        }
+    }
+
+    private fun serveDocument(request: WebResourceRequest): WebResourceResponse? {
+        val channel = docChannel
+        if (channel == null) {
+            val stream = contentResolver.openInputStream(uri) ?: return null
+            return WebResourceResponse("application/pdf", null, stream)
+        }
+        val header = request.requestHeaders?.entries?.firstOrNull { it.key.equals("Range", true) }?.value
+        val match = header?.let { Regex("bytes=(\\d+)-(\\d*)").find(it) }
+        if (match == null) {
+            // Первый запрос: по заголовкам pdf.js понимает, что можно читать частями, и обрывает его.
+            val stream = contentResolver.openInputStream(uri) ?: return null
+            return WebResourceResponse(
+                "application/pdf", null, 200, "OK",
+                mapOf("Accept-Ranges" to "bytes", "Content-Length" to docSize.toString()), stream,
+            )
+        }
+        val start = match.groupValues[1].toLong()
+        var end = minOf(match.groupValues[2].toLongOrNull() ?: (docSize - 1), docSize - 1)
+        if (start > end) return null
+        end = minOf(end, start + MAX_RANGE - 1)
+        val buffer = ByteBuffer.allocate((end - start + 1).toInt())
+        var position = start
+        while (buffer.hasRemaining()) {
+            val read = channel.read(buffer, position)
+            if (read < 0) break
+            position += read
+        }
+        val length = buffer.position()
+        return WebResourceResponse(
+            "application/pdf", null, 206, "Partial Content",
+            mapOf(
+                "Accept-Ranges" to "bytes",
+                "Content-Range" to "bytes $start-${start + length - 1}/$docSize",
+                "Content-Length" to length.toString(),
+            ),
+            ByteArrayInputStream(buffer.array(), 0, length),
+        )
     }
 
     // --- WebView: выдаём только свои файлы и сам документ ---
@@ -183,10 +273,7 @@ class ViewerActivity : AppCompatActivity() {
             if (url.host != HOST || path.contains("..")) return notFound()
             return try {
                 when {
-                    path == "/doc/current.pdf" -> {
-                        val stream = contentResolver.openInputStream(uri) ?: return notFound()
-                        WebResourceResponse("application/pdf", null, stream)
-                    }
+                    path == "/doc/current.pdf" -> serveDocument(request) ?: notFound()
                     path.startsWith("/viewer/") -> {
                         val mime = when (path.substringAfterLast('.', "")) {
                             "html" -> "text/html"
@@ -263,6 +350,15 @@ class ViewerActivity : AppCompatActivity() {
         fun onBar(show: Boolean) = runOnUiThread { showBar(show) }
 
         @JavascriptInterface
+        fun onHistory(count: Int) = runOnUiThread { historyBack.isEnabled = count > 0 }
+
+        @JavascriptInterface
+        fun onView(rotation: Int, zoom: Double) = runOnUiThread {
+            this@ViewerActivity.rotation = rotation
+            this@ViewerActivity.zoom = zoom
+        }
+
+        @JavascriptInterface
         fun onOutline(json: String) = runOnUiThread {
             outline = try {
                 val array = JSONArray(json)
@@ -302,6 +398,10 @@ class ViewerActivity : AppCompatActivity() {
         }
         R.id.action_outline -> {
             showOutline()
+            true
+        }
+        R.id.action_bookmarks -> {
+            showBookmarks()
             true
         }
         R.id.action_rotate -> {
@@ -496,6 +596,57 @@ class ViewerActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun showBookmarks() {
+        if (!loaded) {
+            Toast.makeText(this, R.string.not_loaded, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val key = uri.toString()
+        val list = Bookmarks.load(this, key)
+        val page = firstPage
+        val exists = list.any { it.page == page }
+        val builder = MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.bookmarks)
+            .setNegativeButton(R.string.close, null)
+        if (list.isEmpty()) {
+            builder.setMessage(R.string.no_bookmarks)
+        } else {
+            val items = list.map {
+                if (it.title.isBlank()) getString(R.string.bookmark_item_plain, it.page)
+                else getString(R.string.bookmark_item, it.page, it.title)
+            }
+            builder.setItems(items.toTypedArray()) { _, index ->
+                js("EasyPDF.goToPage(${list[index].page.coerceIn(1, maxOf(1, pageCount))})")
+            }
+        }
+        if (exists) {
+            builder.setPositiveButton(getString(R.string.bookmark_remove, page)) { _, _ ->
+                Bookmarks.removePage(this, key, page)
+            }
+        } else {
+            builder.setPositiveButton(getString(R.string.bookmark_add, page)) { _, _ -> addBookmark(page) }
+        }
+        builder.show()
+    }
+
+    private fun addBookmark(page: Int) {
+        val (input, box) = dialogInput(
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES,
+            getString(R.string.bookmark_name_hint),
+        )
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle(getString(R.string.bookmark_new, page))
+            .setView(box)
+            .setPositiveButton(R.string.add) { _, _ ->
+                Bookmarks.add(this, uri.toString(), page, input.text.toString().trim())
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .create()
+        dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
+        dialog.show()
+        input.requestFocus()
+    }
+
     private fun copyTo(target: Uri) {
         Thread {
             val ok = try {
@@ -631,5 +782,7 @@ class ViewerActivity : AppCompatActivity() {
         const val BAR_DP = 64   // высота панели в activity_viewer.xml
         const val PREF_NIGHT = "night"
         const val PREF_KEEP_ON = "keep_on"
+        const val RANGE_THRESHOLD = 20L * 1024 * 1024   // с какого размера читать файл частями
+        const val MAX_RANGE = 8L * 1024 * 1024
     }
 }

@@ -53,3 +53,47 @@ html:has(body.night), body.night { background: #121212; }
 body.night .pdfViewer .page { background-color: #121212; box-shadow: none; }
 body.night .pdfViewer .page canvas,
 body.night .pdfViewer .page .annotationLayer { filter: invert(1) hue-rotate(180deg); }
+
+/* Бегунок быстрой прокрутки */
+#scrubber {
+  position: absolute;
+  right: 0;
+  top: 80px;
+  width: 26px;
+  height: 54px;
+  border-radius: 13px 0 0 13px;
+  background: rgba(70, 70, 78, .78);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .25s;
+  touch-action: none;
+  z-index: 20;
+}
+#scrubber.visible { opacity: 1; pointer-events: auto; }
+#scrubber::before {           /* две риски на бегунке */
+  content: '';
+  position: absolute;
+  left: 8px; right: 8px; top: 22px;
+  height: 6px;
+  border-top: 2px solid rgba(255, 255, 255, .85);
+  border-bottom: 2px solid rgba(255, 255, 255, .85);
+}
+#scrubber::after {            /* расширяем область касания влево */
+  content: '';
+  position: absolute;
+  left: -22px; right: 0; top: -10px; bottom: -10px;
+}
+#scrubLabel {
+  display: none;
+  position: absolute;
+  right: 44px;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 7px 14px;
+  border-radius: 18px;
+  background: rgba(40, 40, 46, .92);
+  color: #fff;
+  font: 600 15px sans-serif;
+  white-space: nowrap;
+}
+#scrubber.dragging #scrubLabel { display: block; }

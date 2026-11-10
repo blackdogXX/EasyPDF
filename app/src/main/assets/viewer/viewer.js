@@ -19,6 +19,11 @@ const docUrl = params.get('doc') || '/doc/current.pdf';
 const topInset = Math.max(0, parseInt(params.get('top') || '0', 10) || 0);
 document.getElementById('viewer').style.paddingTop = topInset + 'px';
 if (params.get('night') === '1') document.body.classList.add('night');
+// Сохранённые для этого файла поворот и масштаб (масштаб — относительно «по ширине экрана»).
+const startRotation = ((parseInt(params.get('rot') || '0', 10) || 0) % 360 + 360) % 360;
+const startZoom = parseFloat(params.get('zoom') || '1') || 1;
+// Большие файлы читаем частями, а не целиком в память.
+const useRange = params.get('range') === '1';
 
 const container = document.getElementById('viewerContainer');
 const statusBox = document.getElementById('status');
@@ -49,6 +54,45 @@ function applyFit() {
   pdfViewer.currentScaleValue = 'page-width';
   fitScale = pdfViewer.currentScale;
 }
+
+// --- история переходов: «Назад» возвращает туда, откуда прыгнули ---
+const history = [];
+function pushHistory() {
+  if (!numPages) return;
+  const entry = { top: container.scrollTop, left: container.scrollLeft, scale: pdfViewer.currentScale };
+  const last = history[history.length - 1];
+  if (last && Math.abs(last.top - entry.top) < 4 && last.scale === entry.scale) return;
+  history.push(entry);
+  if (history.length > 50) history.shift();
+  call('onHistory', history.length);
+}
+function clearHistory() {
+  if (!history.length) return;
+  history.length = 0;
+  call('onHistory', 0);
+}
+// Переходы по ссылкам внутри документа и по оглавлению идут через linkService.
+for (const method of ['goToDestination', 'goToPage']) {
+  const original = linkService[method].bind(linkService);
+  linkService[method] = (...args) => {
+    pushHistory();
+    programmatic = true;
+    return original(...args);
+  };
+}
+
+// --- поворот и масштаб запоминаются для файла ---
+let viewTimer = 0;
+function reportView() {
+  clearTimeout(viewTimer);
+  viewTimer = setTimeout(() => {
+    if (!numPages || !fitScale) return;
+    const zoom = fitWidth ? 1 : pdfViewer.currentScale / fitScale;
+    call('onView', pdfViewer.pagesRotation | 0, Math.round(zoom * 1000) / 1000);
+  }, 300);
+}
+eventBus.on('scalechanging', reportView);
+eventBus.on('rotationchanging', reportView);
 
 // --- какие страницы сейчас на экране ---
 let lastFirst = 0, lastLast = 0;
@@ -108,7 +152,62 @@ container.addEventListener('scroll', () => {
   else if (programmatic) setBar(false);
   else if (delta > 4) setBar(false);
   else if (delta < -4) setBar(true);
+  showScrubber();
 }, { passive: true });
+
+// --- бегунок быстрой прокрутки у правого края ---
+const scrubber = document.getElementById('scrubber');
+const scrubLabel = document.getElementById('scrubLabel');
+let scrubTimer = 0;
+let scrubDrag = null;
+function scrubTrack() {
+  const from = topInset + 8;
+  const to = Math.max(from + 1, window.innerHeight - 8 - scrubber.offsetHeight);
+  return [from, to];
+}
+function scrollRange() {
+  return container.scrollHeight - container.clientHeight;
+}
+function showScrubber() {
+  const max = scrollRange();
+  // В коротком документе бегунок не нужен.
+  if (numPages < 3 || max < container.clientHeight * 2) {
+    scrubber.classList.remove('visible');
+    return;
+  }
+  const [from, to] = scrubTrack();
+  scrubber.style.top = (from + (to - from) * Math.min(1, container.scrollTop / max)) + 'px';
+  scrubber.classList.add('visible');
+  if (scrubDrag) scrubLabel.textContent = pdfViewer.currentPageNumber + ' / ' + numPages;
+  clearTimeout(scrubTimer);
+  if (!scrubDrag) scrubTimer = setTimeout(() => scrubber.classList.remove('visible'), 1500);
+}
+scrubber.addEventListener('touchstart', (e) => {
+  if (e.touches.length !== 1) return;
+  e.preventDefault();
+  pushHistory();
+  programmatic = true;
+  scrubDrag = { offset: e.touches[0].clientY - scrubber.getBoundingClientRect().top };
+  scrubber.classList.add('dragging');
+  showScrubber();
+}, { passive: false });
+scrubber.addEventListener('touchmove', (e) => {
+  if (!scrubDrag) return;
+  e.preventDefault();
+  const [from, to] = scrubTrack();
+  const y = e.touches[0].clientY - scrubDrag.offset;
+  const ratio = Math.min(1, Math.max(0, (y - from) / (to - from)));
+  programmatic = true;
+  container.scrollTop = ratio * scrollRange();
+}, { passive: false });
+const endScrub = () => {
+  if (!scrubDrag) return;
+  scrubDrag = null;
+  scrubber.classList.remove('dragging');
+  showScrubber();
+};
+scrubber.addEventListener('touchend', endScrub);
+scrubber.addEventListener('touchcancel', endScrub);
 
 // --- масштаб двумя пальцами и двойным касанием ---
 let pinch = null;
@@ -182,6 +281,7 @@ container.addEventListener('touchend', (e) => {
 
 window.addEventListener('resize', () => {
   if (!numPages) return;
+  clearHistory();
   const page = pdfViewer.currentPageNumber;
   if (fitWidth) {
     applyFit();
@@ -207,6 +307,7 @@ eventBus.on('updatefindcontrolstate', ({ state, matchesCount }) => reportFind(st
 window.EasyPDF = {
   goToPage(n) {
     if (!numPages) return;
+    pushHistory();
     programmatic = true;
     pdfViewer.currentPageNumber = Math.min(Math.max(1, n | 0), numPages);
   },
@@ -244,14 +345,28 @@ window.EasyPDF = {
     }
     lastTop = container.scrollTop;
   },
+  back() {
+    const entry = history.pop();
+    call('onHistory', history.length);
+    if (!entry) return;
+    programmatic = true;
+    if (Math.abs(entry.scale - pdfViewer.currentScale) > 0.001) {
+      pdfViewer.currentScale = entry.scale;
+      fitWidth = Math.abs(entry.scale - fitScale) < 0.001;
+    }
+    container.scrollTop = entry.top;
+    container.scrollLeft = entry.left;
+  },
   rotate() {
     if (!numPages) return;
+    clearHistory();
     programmatic = true;
     const page = pdfViewer.currentPageNumber;
     pdfViewer.pagesRotation = (pdfViewer.pagesRotation + 90) % 360;
     applyFit();
     fitWidth = true;
     pdfViewer.currentPageNumber = page;
+    reportView();
   },
   setNight(on) {
     document.body.classList.toggle('night', !!on);
@@ -289,7 +404,12 @@ async function loadOutline(doc) {
 
 // --- загрузка документа ---
 eventBus.on('pagesinit', () => {
+  if (startRotation) pdfViewer.pagesRotation = startRotation;
   applyFit();
+  if (Math.abs(startZoom - 1) > 0.02) {
+    fitWidth = false;
+    pdfViewer.currentScale = Math.min(Math.max(fitScale * startZoom, fitScale * 0.5), Math.max(fitScale * 8, 4));
+  }
   if (startPage > 1) pdfViewer.currentPageNumber = Math.min(startPage, numPages);
   statusBox.classList.add('hidden');
   call('onLoaded', numPages);
@@ -299,8 +419,10 @@ eventBus.on('pagesinit', () => {
 try {
   const task = pdfjsLib.getDocument({
     url: docUrl,
-    disableRange: true,
+    disableRange: !useRange,
     disableStream: true,
+    disableAutoFetch: useRange,
+    rangeChunkSize: 262144,
     wasmUrl: new URL('./lib/wasm/', location.href).href,
     enableXfa: false,
   });
