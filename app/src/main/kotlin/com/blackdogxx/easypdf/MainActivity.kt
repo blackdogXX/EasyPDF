@@ -95,7 +95,7 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    private inner class RecentAdapter : ArrayAdapter<RecentFile>(this, R.layout.item_recent, R.id.name) {
+    private inner class RecentAdapter : ArrayAdapter<RecentFile>(this@MainActivity, R.layout.item_recent, R.id.name) {
         override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
             val view = convertView ?: layoutInflater.inflate(R.layout.item_recent, parent, false)
             val item = getItem(position) ?: return view

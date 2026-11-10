@@ -1,6 +1,5 @@
 package com.blackdogxx.easypdf
 
-import androidx.annotation.OptIn
 import androidx.pdf.ExperimentalPdfApi
 import androidx.pdf.PdfDocument
 import androidx.pdf.view.PdfView
