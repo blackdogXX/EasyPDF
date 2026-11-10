@@ -1,0 +1,49 @@
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #e9e9ee;
+  -webkit-tap-highlight-color: transparent;
+}
+#viewerContainer {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  touch-action: pan-x pan-y;
+  overscroll-behavior: none;
+}
+/* Страницы во всю ширину экрана, между ними узкий зазор. */
+.pdfViewer.removePageBorders .page {
+  margin: 0 auto 6px;
+  border: none;
+  box-shadow: 0 0 2px rgba(0, 0, 0, .25);
+}
+.pdfViewer.removePageBorders .page:last-child {
+  margin-bottom: 0;
+}
+#status {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  font: 15px sans-serif;
+  color: #555;
+  pointer-events: none;
+}
+#status.hidden { display: none; }
+#spinner {
+  width: 36px;
+  height: 36px;
+  border: 4px solid rgba(128, 128, 128, .3);
+  border-top-color: #c62828;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-color-scheme: dark) {
+  html, body { background: #1c1b1f; }
+  #status { color: #bbb; }
+}

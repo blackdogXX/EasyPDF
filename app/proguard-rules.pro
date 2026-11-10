@@ -1,2 +1,4 @@
-# Фрагмент пересоздаётся системой через рефлексию (поворот экрана и т.п.)
--keep class com.blackdogxx.easypdf.EasyPdfFragment { <init>(); }
+# Методы, которые вызывает JavaScript просмотрщика
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}

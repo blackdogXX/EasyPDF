@@ -1,43 +1,69 @@
 package com.blackdogxx.easypdf
 
+import android.annotation.SuppressLint
 import android.content.ClipData
 import android.content.Intent
-import android.graphics.RectF
+import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.OpenableColumns
+import android.text.Editable
 import android.text.InputType
-import android.util.SparseArray
+import android.text.TextWatcher
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
+import android.webkit.JavascriptInterface
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
-import androidx.fragment.app.commitNow
-import androidx.pdf.view.PdfView
+import androidx.core.view.updateLayoutParams
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import java.io.FileNotFoundException
+import org.json.JSONObject
+import java.io.ByteArrayInputStream
 
-class ViewerActivity : AppCompatActivity(), EasyPdfFragment.Host {
+/**
+ * Экран просмотра. Документ рисует pdf.js внутри WebView (страница из assets/viewer),
+ * всё остальное — панель, поиск, переход к странице, «Поделиться» — обычный Android.
+ * Сети у приложения нет: WebView получает только файлы из assets и сам документ.
+ */
+class ViewerActivity : AppCompatActivity() {
 
     private lateinit var toolbar: MaterialToolbar
+    private lateinit var web: WebView
+    private lateinit var searchBar: View
+    private lateinit var searchInput: EditText
+    private lateinit var searchCount: TextView
     private lateinit var uri: Uri
+
     private var displayName = "PDF"
-    private var pdfView: PdfView? = null
     private var pageCount = 0
-    private var currentPage = 0
-    private var visiblePages = 1
-    private var startPage = 0
+    private var firstPage = 1   // с единицы, как в интерфейсе
+    private var lastPage = 1
     private var loaded = false
 
-    private val fragment: EasyPdfFragment?
-        get() = supportFragmentManager.findFragmentByTag(TAG) as? EasyPdfFragment
+    private val handler = Handler(Looper.getMainLooper())
+    private val searchRunnable = Runnable { runSearch(again = false, previous = false) }
 
+    private val searchBack = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() = closeSearch()
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
@@ -51,96 +77,157 @@ class ViewerActivity : AppCompatActivity(), EasyPdfFragment.Host {
 
         setContentView(R.layout.activity_viewer)
         toolbar = findViewById(R.id.toolbar)
+        web = findViewById(R.id.web)
+        searchBar = findViewById(R.id.search_bar)
+        searchInput = findViewById(R.id.search_input)
+        searchCount = findViewById(R.id.search_count)
+        val bottomSpacer = findViewById<View>(R.id.bottom_spacer)
+
         setSupportActionBar(toolbar)
-        applyBarInsets(findViewById(R.id.root), findViewById(R.id.status_spacer), toolbar)
+        applyBarInsets(findViewById(R.id.root), findViewById(R.id.status_spacer), toolbar) { bottom ->
+            bottomSpacer.updateLayoutParams { height = bottom }
+        }
 
         displayName = queryName(uri)
         title = displayName
         toolbar.setOnClickListener { showGoToPage() }
+        onBackPressedDispatcher.addCallback(this, searchBack)
+        setupSearch()
 
+        var startPage = savedInstanceState?.getInt(STATE_PAGE, 0) ?: 0
         if (savedInstanceState == null) {
             // Постоянный доступ дают не все приложения-источники; если не дали — не страшно.
             try {
                 contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
             } catch (_: Exception) {
             }
-            startPage = Recents.find(this, uri.toString())?.page ?: 0
-
-            val f = EasyPdfFragment()
-            supportFragmentManager.commitNow {
-                setReorderingAllowed(true)
-                replace(R.id.container, f, TAG)
-            }
-            f.documentUri = uri
-        } else {
-            pageCount = savedInstanceState.getInt(STATE_PAGES, 0)
-            currentPage = savedInstanceState.getInt(STATE_PAGE, 0)
-            loaded = pageCount > 0
-            updatePageLabel()
         }
+        if (startPage <= 0) startPage = (Recents.find(this, uri.toString())?.page ?: 0) + 1
+
+        web.setBackgroundColor(Color.TRANSPARENT)
+        web.settings.apply {
+            javaScriptEnabled = true
+            allowFileAccess = false
+            allowContentAccess = false
+            setSupportZoom(false)
+            builtInZoomControls = false
+            displayZoomControls = false
+        }
+        web.webViewClient = Client()
+        web.addJavascriptInterface(Bridge(), "Android")
+        web.loadUrl("$ORIGIN/viewer/viewer.html?page=$startPage")
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        outState.putInt(STATE_PAGES, pageCount)
-        outState.putInt(STATE_PAGE, currentPage)
+        if (loaded) outState.putInt(STATE_PAGE, firstPage)
     }
 
     override fun onStop() {
         super.onStop()
-        if (loaded) Recents.setPage(this, uri.toString(), currentPage)
+        if (loaded) Recents.setPage(this, uri.toString(), firstPage - 1)
     }
 
-    // --- события просмотрщика ---
+    override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
+        if (::web.isInitialized) {
+            web.stopLoading()
+            web.destroy()
+        }
+        super.onDestroy()
+    }
 
-    override fun onPdfViewReady(pdfView: PdfView) {
-        this.pdfView = pdfView
-        // Короткий документ прижимаем к верху, а не центрируем по высоте экрана.
-        pdfView.verticalAlignment = PdfView.VERTICAL_ALIGNMENT_TOP
-        pdfView.addOnViewportChangedListener(object : PdfView.OnViewportChangedListener {
-            override fun onViewportChanged(
-                firstVisiblePage: Int,
-                visiblePagesCount: Int,
-                pageLocations: SparseArray<RectF>,
-                zoomLevel: Float,
-            ) {
-                val count = visiblePagesCount.coerceAtLeast(1)
-                if (firstVisiblePage != currentPage || count != visiblePages) {
-                    currentPage = firstVisiblePage
-                    visiblePages = count
-                    updatePageLabel()
+    // --- WebView: выдаём только свои файлы и сам документ ---
+
+    private inner class Client : WebViewClient() {
+        override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse {
+            val url = request.url
+            val path = url.path ?: ""
+            if (url.host != HOST || path.contains("..")) return notFound()
+            return try {
+                when {
+                    path == "/doc/current.pdf" -> {
+                        val stream = contentResolver.openInputStream(uri) ?: return notFound()
+                        WebResourceResponse("application/pdf", null, stream)
+                    }
+                    path.startsWith("/viewer/") -> {
+                        val mime = when (path.substringAfterLast('.', "")) {
+                            "html" -> "text/html"
+                            "css" -> "text/css"
+                            "js", "mjs" -> "text/javascript"
+                            "svg" -> "image/svg+xml"
+                            "gif" -> "image/gif"
+                            "wasm" -> "application/wasm"
+                            else -> "application/octet-stream"
+                        }
+                        val encoding = if (mime.startsWith("text/") || mime == "image/svg+xml") "utf-8" else null
+                        WebResourceResponse(mime, encoding, assets.open(path.removePrefix("/")))
+                    }
+                    else -> notFound()
+                }
+            } catch (_: Exception) {
+                notFound()
+            }
+        }
+
+        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+            val url = request.url
+            if (url.host == HOST) return false
+            // Ссылки из документа открываем во внешнем приложении.
+            if (url.scheme == "http" || url.scheme == "https" || url.scheme == "mailto") {
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, url))
+                } catch (_: Exception) {
                 }
             }
-        })
-        val target = startPage
-        if (target > 0) {
-            startPage = 0
-            pdfView.addOnFirstContentLoadListener { pdfView.scrollToPage(target) }
+            return true
         }
+
+        private fun notFound() = WebResourceResponse(
+            "text/plain", "utf-8", 404, "Not Found", emptyMap(), ByteArrayInputStream(ByteArray(0))
+        )
     }
 
-    override fun onDocumentLoaded(pageCount: Int) {
-        this.pageCount = pageCount
-        loaded = true
-        Recents.touch(this, uri.toString(), displayName, pageCount)
-        updatePageLabel()
-    }
-
-    override fun onDocumentError(error: Throwable) {
-        if (error is SecurityException || error is FileNotFoundException) {
-            Recents.remove(this, uri.toString())
+    /** Вызовы из JavaScript приходят в фоновом потоке — переносим в главный. */
+    private inner class Bridge {
+        @JavascriptInterface
+        fun onLoaded(pages: Int) = runOnUiThread {
+            pageCount = pages
+            loaded = true
+            Recents.touch(this@ViewerActivity, uri.toString(), displayName, pages)
+            updatePageLabel()
         }
-        if (isFinishing || isDestroyed) return
-        MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.open_error)
-            .setMessage(error.localizedMessage ?: error.javaClass.simpleName)
-            .setPositiveButton(R.string.close) { _, _ -> finish() }
-            .setOnCancelListener { finish() }
-            .show()
+
+        @JavascriptInterface
+        fun onPages(first: Int, last: Int) = runOnUiThread {
+            firstPage = first
+            lastPage = last
+            updatePageLabel()
+        }
+
+        @JavascriptInterface
+        fun onError(message: String) = runOnUiThread { showError(message) }
+
+        @JavascriptInterface
+        fun onPassword(incorrect: Boolean) = runOnUiThread { askPassword(incorrect) }
+
+        @JavascriptInterface
+        fun onFind(current: Int, total: Int, state: Int) = runOnUiThread {
+            searchCount.text = when {
+                searchInput.text.isNullOrEmpty() -> ""
+                total > 0 -> "$current/$total"
+                state == FIND_NOT_FOUND -> getString(R.string.not_found)
+                state == FIND_PENDING -> "…"
+                else -> searchCount.text
+            }
+        }
+
+        @JavascriptInterface
+        fun onProgress(percent: Int) = Unit
     }
 
-    override fun onImmersiveMode(enter: Boolean) {
-        toolbar.visibility = if (enter) View.GONE else View.VISIBLE
+    private fun js(code: String) {
+        if (::web.isInitialized) web.evaluateJavascript("window.EasyPDF && ($code)", null)
     }
 
     // --- меню ---
@@ -152,7 +239,7 @@ class ViewerActivity : AppCompatActivity(), EasyPdfFragment.Host {
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
         R.id.action_search -> {
-            fragment?.let { it.isTextSearchActive = !it.isTextSearchActive }
+            openSearch()
             true
         }
         R.id.action_goto -> {
@@ -166,31 +253,86 @@ class ViewerActivity : AppCompatActivity(), EasyPdfFragment.Host {
         else -> super.onOptionsItemSelected(item)
     }
 
-    private fun totalPages(): Int =
-        if (pageCount > 0) pageCount else pdfView?.pdfDocument?.pageCount ?: 0
-
     private fun updatePageLabel() {
-        val total = totalPages()
-        val first = currentPage + 1
-        val last = (currentPage + visiblePages).coerceAtMost(total)
         supportActionBar?.subtitle = when {
-            total <= 0 -> null
-            last > first -> getString(R.string.pages_of, first, last, total)
-            else -> getString(R.string.page_of, first, total)
+            pageCount <= 0 -> null
+            lastPage > firstPage -> getString(R.string.pages_of, firstPage, lastPage, pageCount)
+            else -> getString(R.string.page_of, firstPage, pageCount)
         }
     }
 
-    private fun showGoToPage() {
-        val total = totalPages()
-        val view = pdfView
-        if (total <= 0 || view == null) {
+    // --- поиск ---
+
+    private fun setupSearch() {
+        searchInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(s: Editable?) {
+                handler.removeCallbacks(searchRunnable)
+                handler.postDelayed(searchRunnable, 350)
+            }
+        })
+        searchInput.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEARCH) {
+                handler.removeCallbacks(searchRunnable)
+                runSearch(again = true, previous = false)
+                hideKeyboard()
+                true
+            } else {
+                false
+            }
+        }
+        findViewById<View>(R.id.search_next).setOnClickListener { runSearch(again = true, previous = false) }
+        findViewById<View>(R.id.search_prev).setOnClickListener { runSearch(again = true, previous = true) }
+        findViewById<View>(R.id.search_close).setOnClickListener { closeSearch() }
+    }
+
+    private fun openSearch() {
+        if (!loaded) {
             Toast.makeText(this, R.string.not_loaded, Toast.LENGTH_SHORT).show()
             return
         }
+        toolbar.visibility = View.GONE
+        searchBar.visibility = View.VISIBLE
+        searchBack.isEnabled = true
+        searchInput.requestFocus()
+        searchInput.selectAll()
+        getSystemService(InputMethodManager::class.java)
+            ?.showSoftInput(searchInput, InputMethodManager.SHOW_IMPLICIT)
+        if (!searchInput.text.isNullOrEmpty()) runSearch(again = false, previous = false)
+    }
+
+    private fun closeSearch() {
+        handler.removeCallbacks(searchRunnable)
+        hideKeyboard()
+        searchBar.visibility = View.GONE
+        toolbar.visibility = View.VISIBLE
+        searchBack.isEnabled = false
+        searchCount.text = ""
+        js("EasyPDF.findClose()")
+    }
+
+    private fun runSearch(again: Boolean, previous: Boolean) {
+        val query = searchInput.text?.toString().orEmpty()
+        if (query.isEmpty()) {
+            searchCount.text = ""
+            js("EasyPDF.findClose()")
+            return
+        }
+        js("EasyPDF.find(${JSONObject.quote(query)}, $previous, $again)")
+    }
+
+    private fun hideKeyboard() {
+        getSystemService(InputMethodManager::class.java)
+            ?.hideSoftInputFromWindow(searchInput.windowToken, 0)
+    }
+
+    // --- диалоги ---
+
+    private fun dialogInput(type: Int, hintText: String): Pair<EditText, View> {
         val input = EditText(this).apply {
-            inputType = InputType.TYPE_CLASS_NUMBER
-            hint = getString(R.string.page_hint, total)
-            imeOptions = EditorInfo.IME_ACTION_GO
+            inputType = type
+            hint = hintText
             setSingleLine()
         }
         val pad = (20 * resources.displayMetrics.density).toInt()
@@ -198,9 +340,19 @@ class ViewerActivity : AppCompatActivity(), EasyPdfFragment.Host {
             setPadding(pad, pad / 2, pad, 0)
             addView(input)
         }
+        return input to box
+    }
+
+    private fun showGoToPage() {
+        if (pageCount <= 0) {
+            Toast.makeText(this, R.string.not_loaded, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val (input, box) = dialogInput(InputType.TYPE_CLASS_NUMBER, getString(R.string.page_hint, pageCount))
+        input.imeOptions = EditorInfo.IME_ACTION_GO
         fun go() {
             val n = input.text.toString().toIntOrNull() ?: return
-            view.scrollToPage(n.coerceIn(1, total) - 1)
+            js("EasyPDF.goToPage(${n.coerceIn(1, pageCount)})")
         }
         val dialog = MaterialAlertDialogBuilder(this)
             .setTitle(R.string.go_to_page)
@@ -217,11 +369,40 @@ class ViewerActivity : AppCompatActivity(), EasyPdfFragment.Host {
                 false
             }
         }
-        dialog.window?.setSoftInputMode(
-            android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE
-        )
+        dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
         dialog.show()
         input.requestFocus()
+    }
+
+    private fun askPassword(incorrect: Boolean) {
+        if (isFinishing || isDestroyed) return
+        val (input, box) = dialogInput(
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD,
+            getString(R.string.password_hint),
+        )
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.password_title)
+            .setMessage(if (incorrect) getString(R.string.password_wrong) else null)
+            .setView(box)
+            .setPositiveButton(R.string.ok) { _, _ ->
+                js("EasyPDF.password(${JSONObject.quote(input.text.toString())})")
+            }
+            .setNegativeButton(R.string.cancel) { _, _ -> finish() }
+            .setOnCancelListener { finish() }
+            .create()
+        dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
+        dialog.show()
+        input.requestFocus()
+    }
+
+    private fun showError(message: String) {
+        if (isFinishing || isDestroyed) return
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.open_error)
+            .setMessage(message)
+            .setPositiveButton(R.string.close) { _, _ -> finish() }
+            .setOnCancelListener { finish() }
+            .show()
     }
 
     private fun share() {
@@ -253,8 +434,10 @@ class ViewerActivity : AppCompatActivity(), EasyPdfFragment.Host {
     }
 
     private companion object {
-        const val TAG = "pdf"
-        const val STATE_PAGES = "pages"
+        const val HOST = "appassets.androidplatform.net"
+        const val ORIGIN = "https://$HOST"
         const val STATE_PAGE = "page"
+        const val FIND_NOT_FOUND = 1
+        const val FIND_PENDING = 3
     }
 }

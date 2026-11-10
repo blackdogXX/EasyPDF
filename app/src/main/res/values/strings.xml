@@ -17,4 +17,12 @@
     <string name="remove_from_list">Убрать из списка</string>
     <string name="recent_info">стр. %1$d из %2$d · %3$s</string>
     <string name="not_loaded">Документ ещё загружается</string>
+    <string name="search_hint">Найти в документе</string>
+    <string name="previous">Предыдущее</string>
+    <string name="next">Следующее</string>
+    <string name="password_title">Файл защищён паролем</string>
+    <string name="password_wrong">Неверный пароль, попробуйте ещё раз</string>
+    <string name="password_hint">Пароль</string>
+    <string name="ok">ОК</string>
+    <string name="not_found">нет</string>
 </resources>

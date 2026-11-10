@@ -9,11 +9,10 @@ val buildNumber = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
 android {
     namespace = "com.blackdogxx.easypdf"
     compileSdk = 36
-    compileSdkExtension = 19
 
     defaultConfig {
         applicationId = "com.blackdogxx.easypdf"
-        minSdk = 28
+        minSdk = 26
         targetSdk = 36
         versionCode = buildNumber
         versionName = "1.0.$buildNumber"
@@ -53,10 +52,8 @@ kotlin {
 }
 
 dependencies {
-    implementation("androidx.pdf:pdf-viewer-fragment:1.0.0-beta01")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.activity:activity-ktx:1.10.1")
-    implementation("androidx.fragment:fragment-ktx:1.8.8")
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("com.google.android.material:material:1.13.0")
 }
