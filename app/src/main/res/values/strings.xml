@@ -25,4 +25,14 @@
     <string name="password_hint">Пароль</string>
     <string name="ok">ОК</string>
     <string name="not_found">нет</string>
+    <string name="outline">Оглавление</string>
+    <string name="no_outline">В документе нет оглавления</string>
+    <string name="rotate">Повернуть страницы</string>
+    <string name="night_mode">Ночной режим</string>
+    <string name="keep_screen_on">Не гасить экран</string>
+    <string name="save_copy">Сохранить копию</string>
+    <string name="print">Печать</string>
+    <string name="saved">Копия сохранена</string>
+    <string name="save_error">Не удалось сохранить копию</string>
+    <string name="print_error">Печать недоступна</string>
 </resources>

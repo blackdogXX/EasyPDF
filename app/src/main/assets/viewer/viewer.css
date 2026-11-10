@@ -47,3 +47,9 @@ html, body {
   html, body { background: #1c1b1f; }
   #status { color: #bbb; }
 }
+
+/* Ночной режим: цвета страниц инвертируются, оттенки сохраняются. */
+html:has(body.night), body.night { background: #121212; }
+body.night .pdfViewer .page { background-color: #121212; box-shadow: none; }
+body.night .pdfViewer .page canvas,
+body.night .pdfViewer .page .annotationLayer { filter: invert(1) hue-rotate(180deg); }

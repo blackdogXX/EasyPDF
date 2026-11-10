@@ -7,4 +7,16 @@
         android:title="@string/share" app:showAsAction="always" />
     <item android:id="@+id/action_goto"
         android:title="@string/go_to_page" app:showAsAction="never" />
+    <item android:id="@+id/action_outline"
+        android:title="@string/outline" app:showAsAction="never" />
+    <item android:id="@+id/action_rotate"
+        android:title="@string/rotate" app:showAsAction="never" />
+    <item android:id="@+id/action_night" android:checkable="true"
+        android:title="@string/night_mode" app:showAsAction="never" />
+    <item android:id="@+id/action_keep_on" android:checkable="true"
+        android:title="@string/keep_screen_on" app:showAsAction="never" />
+    <item android:id="@+id/action_save"
+        android:title="@string/save_copy" app:showAsAction="never" />
+    <item android:id="@+id/action_print"
+        android:title="@string/print" app:showAsAction="never" />
 </menu>

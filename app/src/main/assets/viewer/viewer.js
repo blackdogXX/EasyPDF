@@ -6,14 +6,19 @@ globalThis.pdfjsLib = pdfjsLib;
 pdfjsLib.GlobalWorkerOptions.workerSrc = './lib/pdf.worker.min.mjs';
 const { EventBus, PDFViewer, PDFLinkService, PDFFindController } = await import('./lib/pdf_viewer.mjs');
 
-const noop = () => {};
-const host = window.Android || {
-  onLoaded: noop, onPages: noop, onError: noop, onPassword: noop, onFind: noop, onProgress: noop,
-};
+// Вызов метода приложения; в обычном браузере (при отладке) просто ничего не делает.
+function call(name, ...args) {
+  const a = window.Android;
+  if (a && typeof a[name] === 'function') a[name](...args);
+}
 
 const params = new URLSearchParams(location.search);
 const startPage = Math.max(1, parseInt(params.get('page') || '1', 10) || 1);
 const docUrl = params.get('doc') || '/doc/current.pdf';
+// Высота верхней панели приложения: она лежит поверх документа и прячется при прокрутке.
+const topInset = Math.max(0, parseInt(params.get('top') || '0', 10) || 0);
+document.getElementById('viewer').style.paddingTop = topInset + 'px';
+if (params.get('night') === '1') document.body.classList.add('night');
 
 const container = document.getElementById('viewerContainer');
 const statusBox = document.getElementById('status');
@@ -64,7 +69,7 @@ function reportPages() {
   if (!pageVisible(first, c.top, c.bottom) && first < last) first++;
   if (first !== lastFirst || last !== lastLast) {
     lastFirst = first; lastLast = last;
-    host.onPages(first, last);
+    call('onPages', first, last);
   }
 }
 let reportQueued = false;
@@ -77,6 +82,33 @@ container.addEventListener('scroll', queueReport, { passive: true });
 eventBus.on('scalechanging', queueReport);
 eventBus.on('pagechanging', queueReport);
 eventBus.on('pagesloaded', queueReport);
+
+// --- верхняя панель: прячется при прокрутке вниз, возвращается при прокрутке вверх и по касанию ---
+let barShown = true;
+let searchMode = false;
+let programmatic = true;   // прокрутка вызвана не пальцем (переход к странице, поиск, оглавление)
+let lastTop = 0;
+function setBar(show) {
+  if (searchMode || show === barShown) return;
+  barShown = show;
+  call('onBar', show);
+}
+container.addEventListener('touchstart', () => { programmatic = false; }, { passive: true });
+container.addEventListener('scroll', () => {
+  let top = container.scrollTop;
+  // pdf.js ставит страницу вплотную к верху, то есть под панель. В самом начале
+  // документа возвращаемся к нулю, чтобы первая страница была видна целиком.
+  if (programmatic && !searchMode && top > 0 && top <= topInset) {
+    container.scrollTop = 0;
+    top = 0;
+  }
+  const delta = top - lastTop;
+  lastTop = top;
+  if (top <= topInset) setBar(true);
+  else if (programmatic) setBar(false);
+  else if (delta > 4) setBar(false);
+  else if (delta < -4) setBar(true);
+}, { passive: true });
 
 // --- масштаб двумя пальцами и двойным касанием ---
 let pinch = null;
@@ -108,10 +140,23 @@ container.addEventListener('touchend', endPinch, { passive: true });
 container.addEventListener('touchcancel', endPinch, { passive: true });
 
 let lastTap = null;
+let tapTimer = 0;
+let touchStart = null;
+container.addEventListener('touchstart', (e) => {
+  touchStart = e.touches.length === 1
+    ? { x: e.touches[0].clientX, y: e.touches[0].clientY, time: performance.now() }
+    : null;
+}, { passive: true });
 container.addEventListener('touchend', (e) => {
-  if (e.touches.length !== 0 || e.changedTouches.length !== 1) { lastTap = null; return; }
+  clearTimeout(tapTimer);
+  if (e.touches.length !== 0 || e.changedTouches.length !== 1 || !touchStart) { lastTap = null; return; }
   const t = e.changedTouches[0];
   const now = performance.now();
+  // Касанием считаем только короткое нажатие без сдвига (не прокрутку и не выделение текста).
+  if (now - touchStart.time > 350 || Math.hypot(t.clientX - touchStart.x, t.clientY - touchStart.y) > 12) {
+    lastTap = null;
+    return;
+  }
   if (lastTap && now - lastTap.time < 300 &&
       Math.hypot(t.clientX - lastTap.x, t.clientY - lastTap.y) < 30) {
     lastTap = null;
@@ -124,9 +169,16 @@ container.addEventListener('touchend', (e) => {
     }
   } else {
     lastTap = { time: now, x: t.clientX, y: t.clientY };
+    const onLink = e.target && e.target.closest && e.target.closest('a, .linkAnnotation');
+    if (!onLink) {
+      // Ждём, не окажется ли касание двойным, и только потом переключаем панель.
+      tapTimer = setTimeout(() => {
+        if (window.getSelection && String(window.getSelection())) return;
+        setBar(!barShown);
+      }, 310);
+    }
   }
 }, { passive: true });
-container.addEventListener('touchmove', () => { lastTap = null; }, { passive: true });
 
 window.addEventListener('resize', () => {
   if (!numPages) return;
@@ -146,7 +198,7 @@ window.addEventListener('resize', () => {
 
 // --- поиск ---
 function reportFind(state, count) {
-  host.onFind(count ? count.current || 0 : 0, count ? count.total || 0 : 0, state);
+  call('onFind', count ? count.current || 0 : 0, count ? count.total || 0 : 0, state);
 }
 eventBus.on('updatefindmatchescount', ({ matchesCount }) => reportFind(-1, matchesCount));
 eventBus.on('updatefindcontrolstate', ({ state, matchesCount }) => reportFind(state, matchesCount));
@@ -155,9 +207,11 @@ eventBus.on('updatefindcontrolstate', ({ state, matchesCount }) => reportFind(st
 window.EasyPDF = {
   goToPage(n) {
     if (!numPages) return;
+    programmatic = true;
     pdfViewer.currentPageNumber = Math.min(Math.max(1, n | 0), numPages);
   },
   find(query, previous, again) {
+    programmatic = true;
     eventBus.dispatch('find', {
       source: window,
       type: again ? 'again' : '',
@@ -172,6 +226,42 @@ window.EasyPDF = {
   findClose() {
     eventBus.dispatch('findbarclose', { source: window });
   },
+  // Пока открыт поиск, панель не прячется, а документ начинается под ней —
+  // иначе найденное слово могло бы оказаться под панелью.
+  setSearchMode(on) {
+    on = !!on;
+    if (on === searchMode) return;
+    programmatic = true;
+    if (on) {
+      if (!barShown) { barShown = true; call('onBar', true); }
+      searchMode = true;
+      container.style.top = topInset + 'px';
+      container.scrollTop += topInset;
+    } else {
+      container.style.top = '0';
+      container.scrollTop -= topInset;
+      searchMode = false;
+    }
+    lastTop = container.scrollTop;
+  },
+  rotate() {
+    if (!numPages) return;
+    programmatic = true;
+    const page = pdfViewer.currentPageNumber;
+    pdfViewer.pagesRotation = (pdfViewer.pagesRotation + 90) % 360;
+    applyFit();
+    fitWidth = true;
+    pdfViewer.currentPageNumber = page;
+  },
+  setNight(on) {
+    document.body.classList.toggle('night', !!on);
+  },
+  goToOutline(index) {
+    const dest = outlineDests[index];
+    if (dest == null) return;
+    programmatic = true;
+    linkService.goToDestination(dest);
+  },
   password(value) {
     const cb = passwordCallback;
     passwordCallback = null;
@@ -179,12 +269,30 @@ window.EasyPDF = {
   },
 };
 
+// --- оглавление (закладки PDF) ---
+const outlineDests = [];
+async function loadOutline(doc) {
+  const flat = [];
+  try {
+    const walk = (items, depth) => {
+      for (const item of items || []) {
+        if (flat.length >= 3000) return;
+        flat.push({ t: String(item.title || '').trim(), d: depth });
+        outlineDests.push(item.dest ?? null);
+        walk(item.items, depth + 1);
+      }
+    };
+    walk(await doc.getOutline(), 0);
+  } catch (e) { /* оглавления нет или оно повреждено */ }
+  call('onOutline', JSON.stringify(flat));
+}
+
 // --- загрузка документа ---
 eventBus.on('pagesinit', () => {
   applyFit();
   if (startPage > 1) pdfViewer.currentPageNumber = Math.min(startPage, numPages);
   statusBox.classList.add('hidden');
-  host.onLoaded(numPages);
+  call('onLoaded', numPages);
   queueReport();
 });
 
@@ -198,7 +306,7 @@ try {
   });
   task.onPassword = (callback, reason) => {
     passwordCallback = callback;
-    host.onPassword(reason === pdfjsLib.PasswordResponses.INCORRECT_PASSWORD);
+    call('onPassword', reason === pdfjsLib.PasswordResponses.INCORRECT_PASSWORD);
   };
   task.onProgress = ({ loaded, total }) => {
     if (total > 0) statusText.textContent = Math.min(100, Math.round(loaded * 100 / total)) + ' %';
@@ -208,7 +316,8 @@ try {
   pdfViewer.setDocument(doc);
   linkService.setDocument(doc, null);
   findController.setDocument(doc);
+  loadOutline(doc);
 } catch (e) {
   statusBox.classList.add('hidden');
-  host.onError(String((e && e.message) || e));
+  call('onError', String((e && e.message) || e));
 }

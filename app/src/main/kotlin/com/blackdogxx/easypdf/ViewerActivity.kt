@@ -6,8 +6,15 @@ import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
+import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
+import android.os.ParcelFileDescriptor
+import android.print.PageRange
+import android.print.PrintAttributes
+import android.print.PrintDocumentAdapter
+import android.print.PrintDocumentInfo
+import android.print.PrintManager
 import android.provider.OpenableColumns
 import android.text.Editable
 import android.text.InputType
@@ -15,6 +22,7 @@ import android.text.TextWatcher
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
@@ -29,12 +37,18 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updateLayoutParams
+import androidx.core.view.updatePadding
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
+import java.io.FileOutputStream
 
 /**
  * Экран просмотра. Документ рисует pdf.js внутри WebView (страница из assets/viewer),
@@ -45,6 +59,7 @@ class ViewerActivity : AppCompatActivity() {
 
     private lateinit var toolbar: MaterialToolbar
     private lateinit var web: WebView
+    private lateinit var bar: View
     private lateinit var searchBar: View
     private lateinit var searchInput: EditText
     private lateinit var searchCount: TextView
@@ -55,6 +70,14 @@ class ViewerActivity : AppCompatActivity() {
     private var firstPage = 1   // с единицы, как в интерфейсе
     private var lastPage = 1
     private var loaded = false
+    private var searchOpen = false
+    private var outline: List<Pair<String, Int>> = emptyList()   // заголовок и уровень вложенности
+
+    private val settings by lazy { getSharedPreferences("settings", MODE_PRIVATE) }
+
+    private val saveCopy = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/pdf")
+    ) { target -> if (target != null) copyTo(target) }
 
     private val handler = Handler(Looper.getMainLooper())
     private val searchRunnable = Runnable { runSearch(again = false, previous = false) }
@@ -78,15 +101,28 @@ class ViewerActivity : AppCompatActivity() {
         setContentView(R.layout.activity_viewer)
         toolbar = findViewById(R.id.toolbar)
         web = findViewById(R.id.web)
+        bar = findViewById(R.id.bar)
         searchBar = findViewById(R.id.search_bar)
         searchInput = findViewById(R.id.search_input)
         searchCount = findViewById(R.id.search_count)
         val bottomSpacer = findViewById<View>(R.id.bottom_spacer)
 
         setSupportActionBar(toolbar)
-        applyBarInsets(findViewById(R.id.root), findViewById(R.id.status_spacer), toolbar) { bottom ->
-            bottomSpacer.updateLayoutParams { height = bottom }
+        val statusSpacer = findViewById<View>(R.id.status_spacer)
+        val content = findViewById<View>(R.id.content)
+        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.root)) { _, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+            statusSpacer.updateLayoutParams { height = bars.top }
+            content.updatePadding(top = bars.top)
+            bar.updateLayoutParams<ViewGroup.MarginLayoutParams> { topMargin = bars.top }
+            bar.updatePadding(left = bars.left, right = bars.right)
+            bottomSpacer.updateLayoutParams { height = maxOf(bars.bottom, ime.bottom) }
+            insets
         }
+        applyKeepScreenOn()
 
         displayName = queryName(uri)
         title = displayName
@@ -115,7 +151,8 @@ class ViewerActivity : AppCompatActivity() {
         }
         web.webViewClient = Client()
         web.addJavascriptInterface(Bridge(), "Android")
-        web.loadUrl("$ORIGIN/viewer/viewer.html?page=$startPage")
+        val night = if (settings.getBoolean(PREF_NIGHT, false)) 1 else 0
+        web.loadUrl("$ORIGIN/viewer/viewer.html?page=$startPage&top=$BAR_DP&night=$night")
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -223,7 +260,20 @@ class ViewerActivity : AppCompatActivity() {
         }
 
         @JavascriptInterface
-        fun onProgress(percent: Int) = Unit
+        fun onBar(show: Boolean) = runOnUiThread { showBar(show) }
+
+        @JavascriptInterface
+        fun onOutline(json: String) = runOnUiThread {
+            outline = try {
+                val array = JSONArray(json)
+                (0 until array.length()).map { i ->
+                    val o = array.getJSONObject(i)
+                    o.optString("t") to o.optInt("d")
+                }
+            } catch (_: Exception) {
+                emptyList()
+            }
+        }
     }
 
     private fun js(code: String) {
@@ -250,7 +300,61 @@ class ViewerActivity : AppCompatActivity() {
             share()
             true
         }
+        R.id.action_outline -> {
+            showOutline()
+            true
+        }
+        R.id.action_rotate -> {
+            js("EasyPDF.rotate()")
+            true
+        }
+        R.id.action_night -> {
+            val on = !settings.getBoolean(PREF_NIGHT, false)
+            settings.edit().putBoolean(PREF_NIGHT, on).apply()
+            js("EasyPDF.setNight($on)")
+            true
+        }
+        R.id.action_keep_on -> {
+            settings.edit().putBoolean(PREF_KEEP_ON, !settings.getBoolean(PREF_KEEP_ON, false)).apply()
+            applyKeepScreenOn()
+            true
+        }
+        R.id.action_save -> {
+            try {
+                saveCopy.launch(if (displayName.endsWith(".pdf", ignoreCase = true)) displayName else "$displayName.pdf")
+            } catch (_: Exception) {
+                Toast.makeText(this, R.string.save_error, Toast.LENGTH_SHORT).show()
+            }
+            true
+        }
+        R.id.action_print -> {
+            printDocument()
+            true
+        }
         else -> super.onOptionsItemSelected(item)
+    }
+
+    override fun onPrepareOptionsMenu(menu: Menu): Boolean {
+        menu.findItem(R.id.action_night)?.isChecked = settings.getBoolean(PREF_NIGHT, false)
+        menu.findItem(R.id.action_keep_on)?.isChecked = settings.getBoolean(PREF_KEEP_ON, false)
+        return super.onPrepareOptionsMenu(menu)
+    }
+
+    private fun applyKeepScreenOn() {
+        if (settings.getBoolean(PREF_KEEP_ON, false)) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    /** Панель уезжает вверх, за полоску строки состояния, и возвращается обратно. */
+    private fun showBar(show: Boolean) {
+        if (searchOpen && !show) return
+        bar.animate()
+            .translationY(if (show) 0f else -bar.height.toFloat())
+            .setDuration(180)
+            .start()
     }
 
     private fun updatePageLabel() {
@@ -292,7 +396,10 @@ class ViewerActivity : AppCompatActivity() {
             Toast.makeText(this, R.string.not_loaded, Toast.LENGTH_SHORT).show()
             return
         }
-        toolbar.visibility = View.GONE
+        searchOpen = true
+        js("EasyPDF.setSearchMode(true)")
+        showBar(true)
+        toolbar.visibility = View.INVISIBLE
         searchBar.visibility = View.VISIBLE
         searchBack.isEnabled = true
         searchInput.requestFocus()
@@ -309,7 +416,9 @@ class ViewerActivity : AppCompatActivity() {
         toolbar.visibility = View.VISIBLE
         searchBack.isEnabled = false
         searchCount.text = ""
+        searchOpen = false
         js("EasyPDF.findClose()")
+        js("EasyPDF.setSearchMode(false)")
     }
 
     private fun runSearch(again: Boolean, previous: Boolean) {
@@ -372,6 +481,86 @@ class ViewerActivity : AppCompatActivity() {
         dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
         dialog.show()
         input.requestFocus()
+    }
+
+    private fun showOutline() {
+        if (outline.isEmpty()) {
+            Toast.makeText(this, R.string.no_outline, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val items = outline.map { (title, depth) -> "\u2003".repeat(depth.coerceAtMost(6)) + title }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.outline)
+            .setItems(items.toTypedArray()) { _, index -> js("EasyPDF.goToOutline($index)") }
+            .setNegativeButton(R.string.close, null)
+            .show()
+    }
+
+    private fun copyTo(target: Uri) {
+        Thread {
+            val ok = try {
+                contentResolver.openInputStream(uri)!!.use { input ->
+                    contentResolver.openOutputStream(target, "w")!!.use { output -> input.copyTo(output) }
+                }
+                true
+            } catch (_: Exception) {
+                false
+            }
+            runOnUiThread {
+                Toast.makeText(this, if (ok) R.string.saved else R.string.save_error, Toast.LENGTH_SHORT).show()
+            }
+        }.start()
+    }
+
+    /** Печать: отдаём системе исходный файл как есть. */
+    private fun printDocument() {
+        val manager = getSystemService(PrintManager::class.java)
+        if (manager == null) {
+            Toast.makeText(this, R.string.print_error, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val adapter = object : PrintDocumentAdapter() {
+            override fun onLayout(
+                oldAttributes: PrintAttributes?,
+                newAttributes: PrintAttributes?,
+                cancellationSignal: CancellationSignal?,
+                callback: LayoutResultCallback?,
+                extras: Bundle?,
+            ) {
+                if (cancellationSignal?.isCanceled == true) {
+                    callback?.onLayoutCancelled()
+                    return
+                }
+                val info = PrintDocumentInfo.Builder(displayName)
+                    .setContentType(PrintDocumentInfo.CONTENT_TYPE_DOCUMENT)
+                    .setPageCount(if (pageCount > 0) pageCount else PrintDocumentInfo.PAGE_COUNT_UNKNOWN)
+                    .build()
+                callback?.onLayoutFinished(info, oldAttributes != newAttributes)
+            }
+
+            override fun onWrite(
+                pages: Array<out PageRange>?,
+                destination: ParcelFileDescriptor?,
+                cancellationSignal: CancellationSignal?,
+                callback: WriteResultCallback?,
+            ) {
+                Thread {
+                    try {
+                        contentResolver.openInputStream(uri)!!.use { input ->
+                            FileOutputStream(destination!!.fileDescriptor).use { output -> input.copyTo(output) }
+                        }
+                        callback?.onWriteFinished(arrayOf(PageRange.ALL_PAGES))
+                    } catch (e: Exception) {
+                        callback?.onWriteFailed(e.message)
+                    }
+                }.start()
+            }
+        }
+        try {
+            manager.print(displayName, adapter, null)
+        } catch (_: Exception) {
+            Toast.makeText(this, R.string.print_error, Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun askPassword(incorrect: Boolean) {
@@ -439,5 +628,8 @@ class ViewerActivity : AppCompatActivity() {
         const val STATE_PAGE = "page"
         const val FIND_NOT_FOUND = 1
         const val FIND_PENDING = 3
+        const val BAR_DP = 64   // высота панели в activity_viewer.xml
+        const val PREF_NIGHT = "night"
+        const val PREF_KEEP_ON = "keep_on"
     }
 }
