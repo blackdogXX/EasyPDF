@@ -6,7 +6,7 @@ import android.net.Uri
 import android.widget.Toast
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 
-private const val AUTHOR_EMAIL = "ivan.a@iipa-constructing.org"
+private const val AUTHOR_EMAIL = "ivan.a@ipa-constructing.org"
 
 /** Окно «О программе»: версия, дата сборки и контакты автора. */
 fun showAbout(activity: Activity) {
