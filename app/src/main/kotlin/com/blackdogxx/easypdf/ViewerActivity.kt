@@ -101,9 +101,9 @@ class ViewerActivity : AppCompatActivity() {
         override fun handleOnBackPressed() = closeSearch()
     }
 
-    /** Включается, когда есть куда возвращаться после перехода внутри документа. */
-    private val historyBack = object : OnBackPressedCallback(false) {
-        override fun handleOnBackPressed() = js("EasyPDF.back()")
+    /** Системная «Назад» закрывает приложение целиком, а не возвращает к списку файлов. */
+    private val closeApp = object : OnBackPressedCallback(true) {
+        override fun handleOnBackPressed() = finishAffinity()
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -154,11 +154,11 @@ class ViewerActivity : AppCompatActivity() {
         displayName = queryName(uri)
         title = displayName
         toolbar.setOnClickListener { showGoToPage() }
-        // Стрелка в панели делает то же, что системная кнопка «Назад».
+        // Стрелка в панели ведёт к списку недавних документов.
         toolbar.setNavigationIcon(R.drawable.ic_back)
-        toolbar.setNavigationContentDescription(R.string.back)
-        toolbar.setNavigationOnClickListener { onBackPressedDispatcher.onBackPressed() }
-        onBackPressedDispatcher.addCallback(this, historyBack)
+        toolbar.setNavigationContentDescription(R.string.to_recents)
+        toolbar.setNavigationOnClickListener { openRecents() }
+        onBackPressedDispatcher.addCallback(this, closeApp)
         onBackPressedDispatcher.addCallback(this, searchBack)   // добавлен позже — срабатывает первым
         setupSearch()
 
@@ -368,7 +368,6 @@ class ViewerActivity : AppCompatActivity() {
         @JavascriptInterface
         fun onHistory(count: Int) = runOnUiThread {
             historyCount = count
-            historyBack.isEnabled = count > 0
             handler.removeCallbacks(hideChip)
             if (count > 0) {
                 // После перехода кнопка «Вернуться» видна несколько секунд, даже если панель спряталась.
@@ -466,6 +465,15 @@ class ViewerActivity : AppCompatActivity() {
         menu.findItem(R.id.action_night)?.isChecked = settings.getBoolean(PREF_NIGHT, false)
         menu.findItem(R.id.action_keep_on)?.isChecked = settings.getBoolean(PREF_KEEP_ON, false)
         return super.onPrepareOptionsMenu(menu)
+    }
+
+    private fun openRecents() {
+        startActivity(
+            Intent(this, MainActivity::class.java).addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            )
+        )
+        finish()
     }
 
     private fun applyKeepScreenOn() {
