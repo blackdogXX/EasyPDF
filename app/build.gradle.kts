@@ -5,6 +5,9 @@ plugins {
 
 // Номер сборки берётся из GitHub Actions, чтобы каждая новая сборка ставилась поверх старой.
 val buildNumber = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
+// Дата сборки для окна «О программе» (по московскому времени).
+val buildDate: String = java.time.ZonedDateTime.now(java.time.ZoneId.of("Europe/Moscow"))
+    .format(java.time.format.DateTimeFormatter.ofPattern("dd.MM.yyyy"))
 
 android {
     namespace = "com.blackdogxx.easypdf"
@@ -16,6 +19,11 @@ android {
         targetSdk = 36
         versionCode = buildNumber
         versionName = "1.0.$buildNumber"
+        buildConfigField("String", "BUILD_DATE", "\"$buildDate\"")
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     signingConfigs {

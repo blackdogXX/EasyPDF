@@ -458,6 +458,10 @@ class ViewerActivity : AppCompatActivity() {
             printDocument()
             true
         }
+        R.id.action_about -> {
+            showAbout(this)
+            true
+        }
         else -> super.onOptionsItemSelected(item)
     }
 

@@ -49,4 +49,7 @@
     <string name="pinned_name">★ %1$s</string>
     <string name="to_recents">К недавним документам</string>
     <string name="back_to_place">Вернуться</string>
+    <string name="about">О программе</string>
+    <string name="about_text">Версия %1$s\nСборка от %2$s\n\nIvan Abramenko\n%3$s</string>
+    <string name="write_email">Написать</string>
 </resources>

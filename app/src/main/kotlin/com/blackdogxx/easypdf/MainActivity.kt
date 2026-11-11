@@ -50,6 +50,14 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        findViewById<com.google.android.material.appbar.MaterialToolbar>(R.id.toolbar).apply {
+            inflateMenu(R.menu.main)
+            setOnMenuItemClickListener { item ->
+                if (item.itemId == R.id.action_about) showAbout(this@MainActivity)
+                true
+            }
+        }
+
         adapter = RecentAdapter()
         list.adapter = adapter
         list.setOnItemClickListener { _, _, position, _ ->
